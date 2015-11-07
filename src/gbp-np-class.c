@@ -761,8 +761,8 @@ playback_command_new (PlaybackCommandCode code,
   command->code = code;
   command->data = data;
   command->free_data = free_data;
-  command->cond = g_cond_new ();
-  command->lock = g_mutex_new ();
+  g_cond_init (command->cond);
+  g_mutex_init (command->lock);
   command->done = FALSE;
   command->wait = FALSE;
 
@@ -783,8 +783,13 @@ playback_command_free (PlaybackCommand *command)
     npp_gbp_data_free (command->data);
   command->data = NULL;
 
-  g_cond_free (command->cond);
-  g_mutex_free (command->lock);
+  #if !GLIB_CHECK_VERSION(2,32,0)
+    g_cond_free (command->cond);
+    g_mutex_free (command->lock);
+  #else
+    g_cond_clear (command->cond);
+    g_mutex_clear (command->lock);
+  #endif
   g_free (command);
 }
 
@@ -809,7 +814,7 @@ playback_command_push (PlaybackCommandCode code,
         command, compare_commands, NULL);
 
 #ifdef PLAYBACK_THREAD_POOL
-    if (g_atomic_int_exchange_and_add (&data->pending_commands, 1) == 0) {
+    if (g_atomic_int_add (&data->pending_commands, 1) == 0) {
       GST_INFO_OBJECT (data->player, "no pending commands, pushing worker");
       g_thread_pool_push (playback_thread_pool, data, NULL);
     }
@@ -888,12 +893,19 @@ do_playback_queue (NPPGbpData *data, GAsyncQueue *queue)
   gboolean exit = FALSE;
   gboolean free_data = FALSE;
   GTimeVal timeout;
+  guint64 timeout64;
 
   while (exit == FALSE) {
-    g_get_current_time (&timeout);
-    g_time_val_add (&timeout, G_USEC_PER_SEC / 5);
-    command = g_async_queue_timed_pop (queue, &timeout);
-    if (command == NULL)
+    #if !GLIB_CHECK_VERSION(2,35,0)
+      g_get_current_time (&timeout);
+      g_time_val_add (&timeout, G_USEC_PER_SEC / 5);
+      command = g_async_queue_timed_pop (queue, &timeout);
+    #else
+      timeout64 = (guint64) (G_USEC_PER_SEC / 5);
+      command = g_async_queue_timeout_pop (queue, timeout64);
+      timeout = timeout;
+    #endif  
+  if (command == NULL)
       break;
 
     free_data = !command->wait;
